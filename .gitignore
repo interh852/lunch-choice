@@ -1,0 +1,11 @@
+logs/
+.vscode/
+__pycache__/
+.pytest_cache
+build/
+dist/
+tmp/
+credential/
+*.xlsx
+*.spec
+.env
