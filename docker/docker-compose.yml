@@ -1,0 +1,15 @@
+version: "3"
+services:
+  lunch-choice:
+    build:
+      context: ./
+      dockerfile: ./dev/Dockerfile
+    container_name: lunch-choice
+    volumes:
+      - ${PWD}/../:/working
+    working_dir: /working
+    environment:
+      PYTHONPATH: /working
+      TZ: Asia/Tokyo
+      GOOGLE_APPLICATION_CREDENTIALS: /working/credential/gcp_credentials_key(lunch-choice).json
+    tty: true
