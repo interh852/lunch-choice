@@ -14,6 +14,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
 class MenuList:
     def __init__(self):
+        """PDFのメニュー表からCSVのメニュー表を作成"""
         self.service = build(
             serviceName="drive", version="v3", credentials=google.auth.default()[0]
         )
@@ -34,7 +35,7 @@ class MenuList:
         return google_drive_path
 
     def create_menu_csv(self) -> None:
-        """メニュー表をPDFからCSVに変換しGoogle Driveに保存"""
+        """新たにGoogle Driveに追加されたメニュー表をPDFからCSVに変換しGoogle Driveに保存"""
         # Google Driveに新たに追加されたPDFファイルを検索
         pdfs = self.search_drive_pdf(
             drive_pdf_folder_id=self.google_drive_info["FOLDER_PDF"]
