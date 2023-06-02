@@ -304,6 +304,14 @@ class MenuList:
         return output_df
 
     def make_menu_for_month(self, input_df: pl.DataFrame) -> pl.DataFrame:
+        """1か月分のメニュー表の作成
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+
+        Returns:
+            pl.DataFrame: 1か月分のメニュー表
+        """
         start_date = self.get_start_date(input_df)
 
         strat_x = 0.02
@@ -353,6 +361,17 @@ class MenuList:
         left_bottom_y: float,
         date: date,
     ) -> pl.DataFrame:
+        """一週間分のメニュー表の作成
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+            left_bottom_x (float): 文字列の左下のx座標
+            left_bottom_y (float): 文字列の左下のy座標
+            date (date): メニューが記載されている日付
+
+        Returns:
+            pl.DataFrame: 一週間分のメニュー表
+        """
         output_df = pl.concat(
             [
                 self.make_menu_for_oneday(input_df, left_bottom_x, left_bottom_y, date),
@@ -392,6 +411,17 @@ class MenuList:
         left_bottom_y: float,
         date: date,
     ) -> pl.DataFrame:
+        """一日分のメニュー表の作成
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+            left_bottom_x (float): 文字列の左下のx座標
+            left_bottom_y (float): 文字列の左下のy座標
+            date (date): メニューが記載されている日付
+
+        Returns:
+            pl.DataFrame: 一日分のメニュー表
+        """
         # 当日の一番上のメニューを取得
         top_menu = self.extract_text_from_region(
             input_df, left_bottom_x, left_bottom_y, 0.15, 0.03
@@ -466,6 +496,14 @@ class MenuList:
         return output_df
 
     def get_start_date(self, input_df: pl.DataFrame) -> date:
+        """メニュー表の最初の日付を取得
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+
+        Returns:
+            date: メニュー表の最初の日付
+        """
         month_day = self.extract_text_from_region(
             input_df=input_df,
             left_bottom_x=0.07,
@@ -477,6 +515,14 @@ class MenuList:
         return self.make_ymd(month_day)
 
     def make_ymd(self, month_day: str) -> date:
+        """次月の年月日を作成
+
+        Args:
+            month_day (str): 当月の月日
+
+        Returns:
+            date: 次月の年月日
+        """
         year = str((datetime.now() + relativedelta(months=1)).year) + "年"
         return datetime.strptime(year + month_day, "%Y年%m月%d日").date()
 
@@ -488,6 +534,18 @@ class MenuList:
         width: float,
         height: float,
     ) -> str:
+        """領域(left_bottom_x, left_bottom_y, width, height)を指定し,その領域に含まれる文字列を抽出
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+            left_bottom_x (float): 文字列の左下のx座標
+            left_bottom_y (float): 文字列の左下のy座標
+            width (float): 指定した領域の幅
+            height (float): 指定した領域の高さ
+
+        Returns:
+            str: 抽出した文字列
+        """
         output_df = input_df.filter(
             (pl.col("left_bottom_x") >= left_bottom_x)
             & (pl.col("left_bottom_y") >= left_bottom_y)
