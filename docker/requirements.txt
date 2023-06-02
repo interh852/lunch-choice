@@ -1,0 +1,7 @@
+black
+polars==0.16.18
+# pyarrow==11.0.0
+google-cloud-vision==3.4.1
+google-cloud-storage==2.8.0
+google-auth==2.19.0
+google-api-python-client==2.87.0
