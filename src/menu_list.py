@@ -15,13 +15,18 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 class MenuList:
     def __init__(self):
         """PDFのメニュー表からCSVのメニュー表を作成"""
-        self.service = build(
+        self.service_drive = build(
             serviceName="drive", version="v3", credentials=google.auth.default()[0]
+        )
+        self.service_sheets = build(
+            serviceName="sheets", version="v4", credentials=google.auth.default()[0]
         )
         self.client = storage.Client()
         self.bucket_name = "lunch-choice"
         self.bucket = self.client.bucket(self.bucket_name)
         self.google_drive_info = self.read_google_drive_info()
+
+    # ----------------------------- メニュー表の作成 ----------------------------- #
 
     def read_google_drive_info(self) -> Dict[str, str]:
         """GCSに保存されているGoogle Driveの情報を読み込み
@@ -34,26 +39,34 @@ class MenuList:
 
         return google_drive_path
 
-    def create_menu_csv(self) -> None:
-        """新たにGoogle Driveに追加されたメニュー表をPDFからCSVに変換しGoogle Driveに保存"""
+    def create_menu_csv(self, this_date: date) -> None:
+        """新たにGoogle Driveに追加されたメニュー表をPDFからCSVに変換しGoogle Driveに保存
+
+        Args:
+            this_date (date): 当日の日付
+        """
         # Google Driveに新たに追加されたPDFファイルを検索
-        pdfs = self.search_drive_pdf(
-            drive_pdf_folder_id=self.google_drive_info["FOLDER_PDF"]
+        pdfs = self.search_drive_files(
+            folder_id=self.google_drive_info["FOLDER_PDF"],
+            file_type="pdf",
+            search_date=self.get_pastday(this_date=this_date, days=0),
         )
 
         if pdfs:
-            for pdf in pdfs:
-                # 新たに追加されたPDFファイルをGCSにコピー
-                self.copy_menu_from_drive_to_gcs(pdf_info=pdf)
+            # 最新のPDFファイルを取得
+            pdf = pdfs[0]
 
-                # PDFから文字情報のjSONファイルを取得
-                self.async_detect_document(
-                    gcs_source_uri=f"gs://{self.bucket_name}/pdf/{pdf['name']}",
-                    gcs_destination_uri=f"gs://{self.bucket_name}/json/",
-                )
+            # 新たに追加されたPDFファイルをGCSにコピー
+            self.copy_menu_from_drive_to_gcs(pdf_info=pdf)
 
-                # 文字情報のJSONファイルをメニュー表のCSVに変換しGoogle Driveに保存
-                self.convert_menu_csv()
+            # PDFから文字情報のjSONファイルを取得
+            self.async_detect_document(
+                gcs_source_uri=f"gs://{self.bucket_name}/pdf/{pdf['name']}",
+                gcs_destination_uri=f"gs://{self.bucket_name}/json/",
+            )
+
+            # 文字情報のJSONファイルをメニュー表のCSVに変換しGoogle Driveに保存
+            self.convert_menu_csv()
 
     def copy_menu_from_drive_to_gcs(self, pdf_info: Dict[str, str]) -> None:
         """Google DriveからGCSにメニュー表(PDF)をコピー
@@ -68,34 +81,36 @@ class MenuList:
         blob = self.bucket.blob(blob_name=f"pdf/{pdf_info['name']}")
         blob.upload_from_filename(filename=pdf_info["name"])
 
-        # ローカルのPDFを削除
-        os.remove(pdf_info["name"])
-
         print(f"Upload {pdf_info['name']} to GCS")
 
-    def search_drive_pdf(self, drive_pdf_folder_id: str) -> List[Dict[str, str]]:
-        """Google DriveからPDFファイルを検索
+    def search_drive_files(
+        self, folder_id: str, file_type: str, search_date: date
+    ) -> List[Dict[str, str]]:
+        """Google Driveからファイルを検索
 
         Args:
-            folder_id (str): メニュメモのフォルダID
+            folder_id (str): Google DriveのフォルダID
+            file_type (str): ファイルタイプ
+            search_date (date): 検索開始する日にち
 
         Returns:
-            List[str]: PDFファイルのリスト
+            List[str]: Google Driveからファイルのリスト
         """
         # 検索条件
         condition_list = [
-            f"('{drive_pdf_folder_id}' in parents)",
-            "(name contains '.pdf')",
-            f"(createdTime >= '{self.get_yesterday()}')",
+            f"('{folder_id}' in parents)",
+            f"(name contains '.{file_type}')",
+            f"(createdTime >= '{search_date}')",
         ]
         conditions = " and ".join(condition_list)
 
         # フォルダ内を検索
         results = (
-            self.service.files()
+            self.service_drive.files()
             .list(
                 q=conditions,
                 fields="nextPageToken, files(id, name)",
+                orderBy="createdTime desc",
                 includeItemsFromAllDrives=True,
                 supportsAllDrives=True,
             )
@@ -105,28 +120,32 @@ class MenuList:
 
         return files
 
-    def get_yesterday(self) -> str:
-        """前日の日付を取得
-
-        Returns:
-            str: 昨日の日付
-        """
-        return (date.today() - timedelta(days=1)).isoformat()
-
-    def download_drive_file(self, file_id: str, filename: str) -> None:
-        """Google DriveからPDFのダウンロード
+    def get_pastday(self, this_date: date, days: int) -> str:
+        """過去の日付を取得
 
         Args:
-            pdf_id (str): Google DriveにあるPDFファイルのID
+            this_date (date): 日付
+            days (int): 日数
+
+        Returns:
+            str: 過去の日付
         """
-        request = self.service.files().get_media(fileId=file_id)
+        return (this_date - timedelta(days=days)).isoformat()
+
+    def download_drive_file(self, file_id: str, filename: str) -> None:
+        """Google Driveからファイルのダウンロード
+
+        Args:
+            file_id (str): Google DriveにあるファイルのID
+            filename (str): Google Driveにあるファイル名
+        """
+        request = self.service_drive.files().get_media(fileId=file_id)
         file = io.FileIO(filename, "wb")
         downloader = MediaIoBaseDownload(file, request)
 
         done = False
         while done is False:
             _, done = downloader.next_chunk()
-            # print(f"Download {int(status.progress() * 100)}.")
 
     def async_detect_document(
         self, gcs_source_uri: str, gcs_destination_uri: str
@@ -186,15 +205,12 @@ class MenuList:
             drive_csv_folder_id (str): Google DriveのフォルダーID
         """
         # データフレームをCSVファイルに保存
-        target_month = date.today() + relativedelta(months=1)
+        target_month = df["date"][0] + timedelta(weeks=1)
         csv_file = f"{target_month.year}{target_month.month:02d}.csv"
         df.write_csv(file=f"./{csv_file}")
 
         # CSVファイルをGoogle Driveにアップロード
         self.upload_drive_csv(file_name=csv_file, folder_id=drive_csv_folder_id)
-
-        # CSVファイルの削除
-        os.remove(csv_file)
 
         print(f"Upload {csv_file} to Google Drive.")
 
@@ -209,14 +225,15 @@ class MenuList:
         media = MediaFileUpload(
             f"./{file_name}", mimetype="application/csv", resumable=True
         )
-        request = self.service.files().create(
+        request = self.service_drive.files().create(
             body=file_metadata, media_body=media, supportsAllDrives=True
         )
 
         done = False
         while done is False:
             _, done = request.next_chunk()
-            # print(f"Uploaded {int(status.progress() * 100)}.")
+
+    # ----------------------------- Cloud Vision AIのOCR機能を使ってPDFからメニュー表のデータを作成 ----------------------------- #
 
     def convert_vision_response_to_dataframe(self) -> pl.DataFrame:
         """Cloud Vision AIで取得した文字情報をデータフレームに変換
@@ -304,6 +321,14 @@ class MenuList:
         return output_df
 
     def make_menu_for_month(self, input_df: pl.DataFrame) -> pl.DataFrame:
+        """1か月分のメニュー表の作成
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+
+        Returns:
+            pl.DataFrame: 1か月分のメニュー表
+        """
         start_date = self.get_start_date(input_df)
 
         strat_x = 0.02
@@ -353,6 +378,17 @@ class MenuList:
         left_bottom_y: float,
         date: date,
     ) -> pl.DataFrame:
+        """一週間分のメニュー表の作成
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+            left_bottom_x (float): 文字列の左下のx座標
+            left_bottom_y (float): 文字列の左下のy座標
+            date (date): メニューが記載されている日付
+
+        Returns:
+            pl.DataFrame: 一週間分のメニュー表
+        """
         output_df = pl.concat(
             [
                 self.make_menu_for_oneday(input_df, left_bottom_x, left_bottom_y, date),
@@ -392,6 +428,17 @@ class MenuList:
         left_bottom_y: float,
         date: date,
     ) -> pl.DataFrame:
+        """一日分のメニュー表の作成
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+            left_bottom_x (float): 文字列の左下のx座標
+            left_bottom_y (float): 文字列の左下のy座標
+            date (date): メニューが記載されている日付
+
+        Returns:
+            pl.DataFrame: 一日分のメニュー表
+        """
         # 当日の一番上のメニューを取得
         top_menu = self.extract_text_from_region(
             input_df, left_bottom_x, left_bottom_y, 0.15, 0.03
@@ -466,6 +513,15 @@ class MenuList:
         return output_df
 
     def get_start_date(self, input_df: pl.DataFrame) -> date:
+        """メニュー表の最初の日付を取得
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+
+        Returns:
+            date: メニュー表の最初の日付
+        """
+        # メニュー表に記載されているはじめの月日
         month_day = self.extract_text_from_region(
             input_df=input_df,
             left_bottom_x=0.07,
@@ -474,9 +530,20 @@ class MenuList:
             height=0.03,
         )
 
-        return self.make_ymd(month_day)
+        # メニュー表に記載されているはじめの年月日
+        year_month_day = self.make_ymd(month_day)
+
+        return year_month_day
 
     def make_ymd(self, month_day: str) -> date:
+        """メニュー表に記載されているはじめの年月日を作成
+
+        Args:
+            month_day (str): 月日
+
+        Returns:
+            date: メニュー表に記載されているはじめの年月日
+        """
         year = str((datetime.now() + relativedelta(months=1)).year) + "年"
         return datetime.strptime(year + month_day, "%Y年%m月%d日").date()
 
@@ -488,6 +555,18 @@ class MenuList:
         width: float,
         height: float,
     ) -> str:
+        """領域(left_bottom_x, left_bottom_y, width, height)を指定し,その領域に含まれる文字列を抽出
+
+        Args:
+            input_df (pl.DataFrame): Cloud Vision AIから取得した文字情報
+            left_bottom_x (float): 文字列の左下のx座標
+            left_bottom_y (float): 文字列の左下のy座標
+            width (float): 指定した領域の幅
+            height (float): 指定した領域の高さ
+
+        Returns:
+            str: 抽出した文字列
+        """
         output_df = input_df.filter(
             (pl.col("left_bottom_x") >= left_bottom_x)
             & (pl.col("left_bottom_y") >= left_bottom_y)
@@ -496,3 +575,185 @@ class MenuList:
         )
 
         return "".join(output_df["text"].to_list())
+
+    # ----------------------------- Glideのメニュー表の更新 ----------------------------- #
+
+    def update_menu_spreadsheet(self, this_date: date) -> None:
+        """スプレッドシートのメニュー表を更新
+
+        Args:
+            this_date (date): 当日の日付
+        """
+        # 翌週と翌々週のメニュー表の作成
+        df_menu_next_two_weeks = self.get_menu_next_two_weeks(this_date)
+
+        df_menu_next_week = self.get_menu_next_week(this_date)
+
+        df_output = (
+            df_menu_next_two_weeks.join(
+                df_menu_next_week,
+                how="left",
+                on=["date", "name", "price", "Email"],
+            )
+            .fill_null("")
+            .select("date", "name", "price", "check", "Email")
+        )
+
+        # アプリの登録人数
+        menber_num = len(df_output.unique(subset="Email"))
+
+        # 翌週と翌々週のメニュー表をスプレッドシートに上書き
+        self.write_spreadsheet(ranges=f"menu!A1:E{menber_num*50+1}", df=df_output)
+
+    def get_menu_next_two_weeks(self, this_date: date) -> pl.DataFrame:
+        """Google Driveに保存されているCSVファイルから翌週と翌々週のメニューを取得
+
+        Args:
+            this_date (date): 当日の日付
+
+        Returns:
+            pl.DataFrame: 翌週と翌々週のメニュー
+        """
+        # Google Driveに保存されているCSVファイルからメニュー表を読み込み
+        df_menu = self.get_menu_csv(this_date=this_date)
+
+        # ユーザー情報の取得
+        df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
+
+        # 翌週から翌々週までのメニュー表を抽出
+        df_menu_next_two_weeks = (
+            df_menu.with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+            .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
+            .with_columns(diff_days=(pl.col("monday") - this_date).dt.days())
+            .with_columns(price="¥" + pl.col("price").cast(str))
+            .filter(pl.col("diff_days") > 0)
+            .pipe(self.filter_next_two_weeks)
+            .select(pl.exclude(["monday", "diff_days"]))
+        )
+
+        return df_menu_next_two_weeks.join(df_user, how="cross")
+
+    def get_menu_csv(self, this_date: date) -> pl.DataFrame:
+        """Google Driveに保存されているCSVファイルからメニュー表を読み込み
+
+        Args:
+            this_date (date): 当日の日付
+
+        Returns:
+            pl.DataFrame: メニュー表
+        """
+        # Google Driveに保存されているCSVファイルの検索
+        csvs = self.search_drive_files(
+            folder_id=self.google_drive_info["FOLDER_CSV"],
+            file_type="csv",
+            search_date=self.get_pastday(this_date=this_date, days=31),
+        )
+
+        # Google DriveからCSVファイルをダウンロード
+        df = pl.DataFrame()
+        for i in range(2):
+            csv = csvs[i]
+            self.download_drive_file(file_id=csv["id"], filename=csv["name"])
+            df = pl.concat([df, pl.read_csv(csv["name"])])
+
+        return df.unique()
+
+    def filter_next_two_weeks(self, df: pl.DataFrame) -> pl.DataFrame:
+        """翌週と翌々週のメニューを抽出
+
+        Args:
+            df (pl.DataFrame): メニュー表
+
+        Returns:
+            pl.DataFrame: 翌週と翌々週のメニュー
+        """
+        # 翌週のメニューを抽出
+        df_next = df.filter(pl.col("diff_days") == pl.col("diff_days").min())
+        # 翌々週のメニューを抽出
+        df_next2 = df.filter(pl.col("diff_days") > pl.col("diff_days").min()).filter(
+            pl.col("diff_days") == pl.col("diff_days").min()
+        )
+
+        return pl.concat([df_next, df_next2])
+
+    def get_menu_next_week(self, this_date: date) -> pl.DataFrame:
+        """Google Driveに保存されているスプレッドシートから翌週のメニュー表を取得
+
+        Args:
+            this_date (date): 当日の日付
+
+        Returns:
+            pl.DataFrame: 翌週のメニュー表
+        """
+        # Google Driveに保存されているスプレッドシートからメニュー表を読み込み
+        df_menu = self.read_spreadsheet(ranges="menu!A1:E301")
+
+        # 翌週のメニュー表を抽出
+        df_menu_next_week = (
+            df_menu.with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+            .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
+            .with_columns(diff_days=(pl.col("monday") - this_date).dt.days())
+            .filter(pl.col("diff_days") > 0)
+            .filter(pl.col("diff_days") == pl.min("diff_days"))
+            .select(pl.exclude(["monday", "diff_days"]))
+        )
+
+        return df_menu_next_week
+
+    def read_spreadsheet(self, ranges: str) -> pl.DataFrame:
+        """Google Driveに保存されているスプレッドシートからデータを読み込み
+
+        Args:
+            ranges (str): スプレッドシートのシート名:セル範囲
+
+        Returns:
+            pl.DataFrame: スプレッドシートから取得したデータ
+        """
+        # リクエスト
+        response = (
+            self.service_sheets.spreadsheets()
+            .values()
+            .batchGet(
+                spreadsheetId=self.google_drive_info["SPREAD_SHEET"],
+                ranges=[ranges],
+            )
+            .execute()
+        )
+
+        # レスポンスからデータ部分の抽出
+        ranges = response.get("valueRanges", [])
+
+        return pl.DataFrame(ranges[0]["values"][1:], schema=ranges[0]["values"][0])
+
+    def write_spreadsheet(self, ranges: str, df: pl.DataFrame) -> None:
+        """データフレームをスプレッドシートに書き込み
+
+        Args:
+            ranges (str): スプレッドシートのシート名:セル範囲
+            df (pl.DataFrame): 書き込むデータ
+        """
+        # スプレッドシートに書き込むデータ
+        data = [
+            {
+                "range": ranges,
+                "majorDimension": "COLUMNS",
+                "values": [
+                    ["date"] + df["date"].dt.strftime("%Y-%m-%d").to_list(),
+                    ["name"] + df["name"].to_list(),
+                    ["price"] + df["price"].to_list(),
+                    ["check"] + df["check"].to_list(),
+                    ["Email"] + df["Email"].to_list(),
+                ],
+            }
+        ]
+
+        # リクエスト
+        (
+            self.service_sheets.spreadsheets()
+            .values()
+            .batchUpdate(
+                spreadsheetId=self.google_drive_info["SPREAD_SHEET"],
+                body={"value_input_option": "USER_ENTERED", "data": data},
+            )
+            .execute()
+        )
