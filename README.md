@@ -9,6 +9,11 @@ cd docker
 docker-compose up -d --build
 ```
 
+# Build
+
+Google Cloudで本番運用するので、Dockerイメージを下記の方法でビルドしArtifact Registryで管理
+https://cloud.google.com/build/docs/automating-builds/github/build-repos-from-github?hl=ja&generation=1st-gen
+
 # Script
 
 メニュー表の作成
