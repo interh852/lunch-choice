@@ -9,10 +9,11 @@ steps:
 
   - id: "deploy"
     name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: gcloud
     args: ["run", "deploy", "lunch-choice", "--image", "${_IMAGE}", "--region", "asia-northeast1"]
 
 images: 
   - "${_IMAGE}"
-  
+
 options:
   logging: CLOUD_LOGGING_ONLY
