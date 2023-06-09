@@ -3,14 +3,14 @@ steps:
     name: "gcr.io/cloud-builders/docker"
     args: ["build", "-t", "${_IMAGE}", "-f", "./docker/prod/Dockerfile", "."]
 
-  - id: "push"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_IMAGE}"]
+  # - id: "push"
+  #   name: "gcr.io/cloud-builders/docker"
+  #   args: ["push", "${_IMAGE}"]
 
-  - id: "deploy"
-    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-    entrypoint: gcloud
-    args: ["run", "deploy", "lunch-choice", "--image", "${_IMAGE}", "--region", "asia-northeast1"]
+  # - id: "deploy"
+  #   name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+  #   entrypoint: gcloud
+  #   args: ["run", "deploy", "lunch-choice", "--image", "${_IMAGE}", "--region", "$LOCATION"]
 
 images: 
   - "${_IMAGE}"
