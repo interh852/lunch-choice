@@ -22,7 +22,7 @@ done
 
 # $dateが空の場合は今日の日付を入力
 if [ -z $date ]; then
-    date=`date "+%Y/%m/%d"`
+    date=`date "+%Y-%m-%d"`
 fi
 
 # pythonスクリプトの実行
