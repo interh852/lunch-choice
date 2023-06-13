@@ -1,5 +1,5 @@
-import os
 import io
+import re
 import json
 import polars as pl
 from typing import Dict, List
@@ -34,7 +34,7 @@ class MenuList:
         Returns:
             Dict[str, str]: Google Driveの情報
         """
-        blob = self.bucket.blob(blob_name="drive/google_drive.json")
+        blob = self.bucket.blob(blob_name="credential/google_drive.json")
         google_drive_path = json.load(io.BytesIO(blob.download_as_bytes()))
 
         return google_drive_path
@@ -576,7 +576,81 @@ class MenuList:
 
         return "".join(output_df["text"].to_list())
 
-    # ----------------------------- Glideのメニュー表の更新 ----------------------------- #
+    # ----------------------------- Glideのメニュー表の操作 ----------------------------- #
+
+    def update_menu_next_week(self, this_date: date) -> None:
+        # Google Driveに保存されているCSVファイルからメニュー表を読み込み
+        df_menu = self.get_menu_csv(this_date=this_date)
+
+        # ユーザー情報の取得
+        df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
+
+        # 翌週のメニュー表を作成
+        df_menu_next_week = (
+            df_menu.join(df_user, how="cross")
+            .with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+            .with_columns(price="¥" + pl.col("price").cast(str))
+            .with_columns(check=pl.lit(""))
+            .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
+            .with_columns(diff_days=(pl.col("monday") - this_date).dt.days())
+            .filter(pl.col("diff_days") > 0)
+            .filter(pl.col("diff_days") == pl.col("diff_days").min())
+            .select("date", "name", "price", "check", "Email")
+        )
+
+        # アプリの登録人数
+        menber_num = len(df_menu_next_week.unique(subset="Email"))
+
+        # 翌週のメニュー表をスプレッドシートに上書き
+        self.write_spreadsheet(
+            ranges=f"next_week!A1:E{menber_num*25+1}", df=df_menu_next_week
+        )
+
+    def update_menu_this_week(self) -> None:
+        # ユーザー情報の取得
+        df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
+
+        # アプリの登録人数
+        menber_num = len(df_user.unique(subset="Email"))
+
+        # 翌週のメニューの取得
+        df_menu_next_week = (
+            self.read_spreadsheet(ranges=f"next_week!A1:E{menber_num*25+1}")
+            .with_columns(date=pl.col("date"))
+            .str.strptime(pl.Date, "%Y-%m-%d")
+        )
+
+        # 注文されたメニューを抽出
+        df_menu_this_week = df_menu_next_week.filter(pl.col("check") == "TRUE").select(
+            pl.exclude("check")
+        )
+
+        # 今週のメニューをスプレッドシートに上書き
+        self.write_spreadsheet(
+            ranges=f"this_week!A1:D{menber_num*25+1}", df=df_menu_this_week
+        )
+
+    def report_menu_next_week(self) -> None:
+        # ユーザー情報の取得
+        df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
+
+        # アプリの登録人数
+        menber_num = len(df_user.unique(subset="Email"))
+
+        # 翌週のメニューの取得
+        df_menu_next_week = self.read_spreadsheet(
+            ranges=f"next_week!A1:E{menber_num*25+1}"
+        )
+
+        df_menu_summary = (
+            df_menu_next_week.filter(pl.col("check") == "TRUE")
+            .select("date", "name", "price", "check")
+            .groupby(["date", "name", "price"])
+            .count()
+            .sort(["date"])
+        )
+
+        print(df_menu_summary) # テストでデータフレームを出力するようにしている
 
     def update_menu_spreadsheet(self, this_date: date) -> None:
         """スプレッドシートのメニュー表を更新
@@ -732,18 +806,47 @@ class MenuList:
             ranges (str): スプレッドシートのシート名:セル範囲
             df (pl.DataFrame): 書き込むデータ
         """
+        # スプレッドシートのデータを削除
+        self.remove_spreadsheet(ranges, df)
+
         # スプレッドシートに書き込むデータ
         data = [
             {
                 "range": ranges,
                 "majorDimension": "COLUMNS",
                 "values": [
-                    ["date"] + df["date"].dt.strftime("%Y-%m-%d").to_list(),
-                    ["name"] + df["name"].to_list(),
-                    ["price"] + df["price"].to_list(),
-                    ["check"] + df["check"].to_list(),
-                    ["Email"] + df["Email"].to_list(),
+                    [col] + df[col].dt.strftime("%Y-%m-%d").to_list()
+                    if col == "date"
+                    else [col] + df[col].to_list()
+                    for col in df.columns
                 ],
+            }
+        ]
+
+        # リクエスト
+        (
+            self.service_sheets.spreadsheets()
+            .values()
+            .batchUpdate(
+                spreadsheetId=self.google_drive_info["SPREAD_SHEET"],
+                body={"value_input_option": "USER_ENTERED", "data": data},
+            )
+            .execute()
+        )
+
+    def remove_spreadsheet(self, ranges: str, df: pl.DataFrame) -> None:
+        """特定のセル範囲に書かれたスプレッドシートのデータを削除
+
+        Args:
+            ranges (str): スプレッドシートのシート名:セル範囲
+            df (pl.DataFrame): 書き込むデータ
+        """
+        # スプレッドシートに書き込むデータ
+        data = [
+            {
+                "range": ranges,
+                "majorDimension": "COLUMNS",
+                "values": [[""] * int(ranges.split(":")[1][1:]) for col in df.columns],
             }
         ]
 
