@@ -614,11 +614,9 @@ class MenuList:
         menber_num = len(df_user.unique(subset="Email"))
 
         # 翌週のメニューの取得
-        df_menu_next_week = (
-            self.read_spreadsheet(ranges=f"next_week!A1:E{menber_num*25+1}")
-            .with_columns(date=pl.col("date"))
-            .str.strptime(pl.Date, "%Y-%m-%d")
-        )
+        df_menu_next_week = self.read_spreadsheet(
+            ranges=f"next_week!A1:E{menber_num*25+1}"
+        ).with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
 
         # 注文されたメニューを抽出
         df_menu_this_week = df_menu_next_week.filter(pl.col("check") == "TRUE").select(
@@ -722,7 +720,6 @@ class MenuList:
             file_type="csv",
             search_date=self.get_pastday(this_date=this_date, days=31),
         )
-        print(csvs)
 
         # Google DriveからCSVファイルをダウンロード
         df = pl.DataFrame()
