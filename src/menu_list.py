@@ -717,6 +717,7 @@ class MenuList:
             pl.DataFrame: メニュー表
         """
         # Google Driveに保存されているCSVファイルの検索
+        print(self.google_drive_info)
         csvs = self.search_drive_files(
             folder_id=self.google_drive_info["FOLDER_CSV"],
             file_type="csv",
