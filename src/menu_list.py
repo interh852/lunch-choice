@@ -1,5 +1,4 @@
 import io
-import re
 import json
 import polars as pl
 from typing import Dict, List
@@ -616,7 +615,11 @@ class MenuList:
         # 翌週のメニューの取得
         df_menu_next_week = self.read_spreadsheet(
             ranges=f"next_week!A1:E{menber_num*25+1}"
-        ).with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+        ).with_columns(
+            date=pl.col("date")
+            .str.replace(r"\s.*", "")
+            .str.strptime(pl.Date, "%Y-%m-%d")
+        )
 
         # 注文されたメニューを抽出
         df_menu_this_week = df_menu_next_week.filter(pl.col("check") == "TRUE").select(
@@ -638,6 +641,10 @@ class MenuList:
         # 翌週のメニューの取得
         df_menu_next_week = self.read_spreadsheet(
             ranges=f"next_week!A1:E{menber_num*25+1}"
+        ).with_columns(
+            date=pl.col("date")
+            .str.replace(r"\s.*", "")
+            .str.strptime(pl.Date, "%Y-%m-%d")
         )
 
         df_menu_summary = (
