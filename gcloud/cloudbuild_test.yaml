@@ -1,0 +1,10 @@
+steps:
+  - id: "build"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "${LOCATION}-docker.pkg.dev/${PROJECT_ID}/lunch-choice/lunch-choice:${BRANCH_NAME}", "-f", "./docker/prod/Dockerfile", "."]
+
+images: 
+  - "${LOCATION}-docker.pkg.dev/${PROJECT_ID}/lunch-choice/lunch-choice:${BRANCH_NAME}"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
