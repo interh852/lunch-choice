@@ -650,7 +650,7 @@ class MenuList:
             .sort(["date"])
         )
 
-        print(df_menu_summary) # テストでデータフレームを出力するようにしている
+        print(df_menu_summary)  # テストでデータフレームを出力するようにしている
 
     def update_menu_spreadsheet(self, this_date: date) -> None:
         """スプレッドシートのメニュー表を更新
@@ -722,6 +722,7 @@ class MenuList:
             file_type="csv",
             search_date=self.get_pastday(this_date=this_date, days=31),
         )
+        print(csvs)
 
         # Google DriveからCSVファイルをダウンロード
         df = pl.DataFrame()
