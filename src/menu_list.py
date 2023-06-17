@@ -1,7 +1,7 @@
 import io
 import json
 import polars as pl
-from typing import Dict, List
+from typing import Dict, List, Any
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
 import google.auth
@@ -9,6 +9,8 @@ from google.cloud import vision
 from google.cloud import storage
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 
 
 class MenuList:
@@ -23,17 +25,23 @@ class MenuList:
         self.client = storage.Client()
         self.bucket_name = "lunch-choice"
         self.bucket = self.client.bucket(self.bucket_name)
-        self.google_drive_info = self.read_google_drive_info()
+        self.google_drive_info = self.read_gcs_json(
+            json_path="credential/google_drive.json"
+        )
+        self.slack_info = self.read_gcs_json(json_path="credential/slack.json")
 
     # ----------------------------- メニュー表の作成 ----------------------------- #
 
-    def read_google_drive_info(self) -> Dict[str, str]:
+    def read_gcs_json(self, json_path: str) -> Dict[str, str]:
         """GCSに保存されているGoogle Driveの情報を読み込み
 
+        Args:
+            json_path (str): GCSに保存されているJSONファイル
+
         Returns:
-            Dict[str, str]: Google Driveの情報
+            Dict[str, str]: JSONファイルから読み込んだデータ
         """
-        blob = self.bucket.blob(blob_name="credential/google_drive.json")
+        blob = self.bucket.blob(blob_name=json_path)
         google_drive_path = json.load(io.BytesIO(blob.download_as_bytes()))
 
         return google_drive_path
@@ -578,6 +586,11 @@ class MenuList:
     # ----------------------------- Glideのメニュー表の操作 ----------------------------- #
 
     def update_menu_next_week(self, this_date: date) -> None:
+        """来週のメニューをアップデート
+
+        Args:
+            this_date (date): 当日の日付
+        """
         # Google Driveに保存されているCSVファイルからメニュー表を読み込み
         df_menu = self.get_menu_csv(this_date=this_date)
 
@@ -606,6 +619,7 @@ class MenuList:
         )
 
     def update_menu_this_week(self) -> None:
+        """今週のメニューをアップデート"""
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
 
@@ -632,6 +646,7 @@ class MenuList:
         )
 
     def report_menu_next_week(self) -> None:
+        """来週のメニューをslackにレポート"""
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
 
@@ -647,6 +662,7 @@ class MenuList:
             .str.strptime(pl.Date, "%Y-%m-%d")
         )
 
+        # 翌週のメニューの集計
         df_menu_summary = (
             df_menu_next_week.filter(pl.col("check") == "TRUE")
             .select("date", "name", "price", "check")
@@ -655,7 +671,12 @@ class MenuList:
             .sort(["date"])
         )
 
-        print(df_menu_summary)  # テストでデータフレームを出力するようにしている
+        # 翌週のメニューをslackに送信
+        self.message_to_slack(
+            channel_name="sapporo_lunch",
+            header_text="来週のお弁当の一覧表です。",
+            df=df_menu_summary,
+        )
 
     def update_menu_spreadsheet(self, this_date: date) -> None:
         """スプレッドシートのメニュー表を更新
@@ -865,3 +886,79 @@ class MenuList:
             )
             .execute()
         )
+
+    # ----------------------------- Slackにメッセージを送信 ----------------------------- #
+
+    def message_to_slack(
+        self,
+        channel_name: str,
+        header_text: str,
+        body_text: str = None,
+        df: pl.DataFrame = None,
+    ) -> None:
+        """slackにメッセージを送信
+
+        Args:
+            channel_name (str): チャンネル名
+            header_text (str): ヘッダー文
+            body_text (str, optional): 本文. Defaults to None.
+            df (pl.DataFrame, optional): メニュー表. Defaults to None.
+        """
+        client = WebClient(token=self.slack_info["SLACK_TOKEN"])
+
+        try:
+            response = client.chat_postMessage(
+                channel=self.slack_info["CHANNEL_ID"][channel_name],
+                blocks=self.make_slack_messages(
+                    header_text=header_text, body_text=body_text, df=df
+                ),
+            )
+        except SlackApiError as e:
+            assert e.response["error"]
+
+    def make_slack_messages(
+        self, header_text: str, body_text: str = None, df: pl.DataFrame = None
+    ) -> List[Dict[str, Any]]:
+        """slackに送信するメッセージを作成
+
+        Args:
+            header_text (str): ヘッダー文
+            body_text (str, optional): 本文. Defaults to None.
+            df (pl.DataFrame, optional): メニュー表. Defaults to None.
+
+        Returns:
+            List[Dict[str, Any]]: slackに送信するメッセージ
+        """
+        messages = [
+            self.make_slack_block(
+                type="header", sub_type="plain_text", text=header_text
+            )
+        ]
+        if body_text is not None:
+            messages.append(
+                self.make_slack_block(type="section", sub_type="mrkdwn", text=body_text)
+            )
+        if df is not None:
+            for menu in df.iter_rows(named=True):
+                messages.append(
+                    self.make_slack_block(
+                        type="section",
+                        sub_type="mrkdwn",
+                        text=f"{menu['date']} {menu['name']} {menu['price']} {menu['count']}個",
+                    )
+                )
+
+        return messages
+
+    def make_slack_block(self, type: str, sub_type: str, text: str) -> Dict[str, Any]:
+        """slackに送信するメッセージブロックを作成
+
+        Args:
+            type (str): コンポーネントのタイプ
+            sub_type (str): textのタイプ
+            text (str): メッセージの文章
+
+        Returns:
+            Dict[str, Any]: slackに送信する1ブロック
+        """
+        return {"type": type, "text": {"type": sub_type, "text": text}}
