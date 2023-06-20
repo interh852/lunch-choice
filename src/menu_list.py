@@ -714,7 +714,7 @@ class MenuList:
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(
             sheet_id=self.google_drive_info["SPREAD_SHEET"], ranges="App: Logins!B1:B10"
-        )
+        ).unique(subset=["Email"])
 
         # 翌週のメニュー表を作成
         df_menu_next_week = (
@@ -731,11 +731,11 @@ class MenuList:
         )
 
         # アプリの登録人数
-        menber_num = len(df_menu_next_week.unique(subset="Email"))
+        member_num = len(df_menu_next_week)
 
         # 翌週のメニュー表をスプレッドシートに上書き
         self.write_spreadsheet(
-            ranges=f"next_week!A1:E{menber_num*25+1}", df=df_menu_next_week
+            ranges=f"next_week!A1:E{member_num*25+1}", df=df_menu_next_week
         )
 
     def update_menu_this_week(self) -> None:
@@ -746,12 +746,12 @@ class MenuList:
         )
 
         # アプリの登録人数
-        menber_num = len(df_user.unique(subset="Email"))
+        member_num = len(df_user.unique(subset="Email"))
 
         # 翌週のメニューの取得
         df_menu_next_week = self.read_spreadsheet(
             sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges=f"next_week!A1:E{menber_num*25+1}",
+            ranges=f"next_week!A1:E{member_num*25+1}",
         ).with_columns(
             date=pl.col("date")
             .str.replace(r"\s.*", "")
@@ -765,7 +765,7 @@ class MenuList:
 
         # 今週のメニューをスプレッドシートに上書き
         self.write_spreadsheet(
-            ranges=f"this_week!A1:D{menber_num*25+1}", df=df_menu_this_week
+            ranges=f"this_week!A1:D{member_num*25+1}", df=df_menu_this_week
         )
 
     def report_menu_next_week(self) -> None:
@@ -773,15 +773,15 @@ class MenuList:
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(
             sheet_id=self.google_drive_info["SPREAD_SHEET"], ranges="App: Logins!B1:B10"
-        )
+        ).unique(subset=["Email"])
 
         # アプリの登録人数
-        menber_num = len(df_user.unique(subset="Email"))
+        member_num = len(df_user)
 
         # 翌週のメニューの取得
         df_menu_next_week = self.read_spreadsheet(
             sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges=f"next_week!A1:E{menber_num*25+1}",
+            ranges=f"next_week!A1:E{member_num*25+1}",
         ).with_columns(
             date=pl.col("date")
             .str.replace(r"\s.*", "")
