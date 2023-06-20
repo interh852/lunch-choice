@@ -1,7 +1,7 @@
 black
 polars==0.16.18
 python-dateutil==2.8.2
-# pyarrow==11.0.0
+jpholiday==0.1.8
 google-cloud-vision==3.4.1
 google-cloud-storage==2.8.0
 google-auth==2.19.0

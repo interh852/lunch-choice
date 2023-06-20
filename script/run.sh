@@ -6,7 +6,7 @@ ROOT_DIR=$(cd $(dirname $0); pwd)/..
 EXEC=$ROOT_DIR/src/run.py
 
 usage_exit(){
-    echo "Usage: $CMD [-d  YYYY/MM/DD] [-o create/update/notice]" 1>&2
+    echo "Usage: $CMD [-d YYYY-MM-DD] [-o create/update_this_week/update_next_week/notice_check_lunch/report_next_week]" 1>&2
     exit 1
 }
 

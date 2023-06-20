@@ -1,9 +1,10 @@
 import io
 import json
 import polars as pl
-from typing import Dict, List, Any
+import jpholiday
 from datetime import datetime, date, timedelta
 from dateutil.relativedelta import relativedelta
+from typing import Dict, List, Any
 import google.auth
 from google.cloud import vision
 from google.cloud import storage
@@ -30,6 +31,31 @@ class MenuList:
         )
         self.slack_info = self.read_gcs_json(json_path="credential/slack.json")
 
+    def check_execute(self, operation: str, this_date: date) -> bool:
+        """オペレーションを実行するかチェック
+
+        Args:
+            operation (str): オペレーション
+            this_date (date): 当日の日付
+
+        Returns:
+            bool: 実行する場合はTrue, 実行しない場合はFalse
+        """
+        # Google Driveに保存されているCSVファイルからメニュー表を読み込み
+        df_menu = self.read_menu_excel(this_date=this_date)
+
+        df_schedule = (
+            df_menu.unique(subset="date")
+            .select("date", pl.col(operation))
+            .filter(pl.col("date") == this_date)
+            .filter(pl.col(operation) == "TRUE")
+        )
+
+        if len(df_schedule) > 0:
+            return True
+        else:
+            return False
+
     # ----------------------------- メニュー表の作成 ----------------------------- #
 
     def read_gcs_json(self, json_path: str) -> Dict[str, str]:
@@ -46,8 +72,8 @@ class MenuList:
 
         return google_drive_path
 
-    def create_menu_csv(self, this_date: date) -> None:
-        """新たにGoogle Driveに追加されたメニュー表をPDFからCSVに変換しGoogle Driveに保存
+    def create_menu_spreadsheet(self, this_date: date) -> None:
+        """新たにGoogle Driveに追加されたメニュー表をPDFからスプレッドシートに変換しGoogle Driveに保存
 
         Args:
             this_date (date): 当日の日付
@@ -55,7 +81,7 @@ class MenuList:
         # Google Driveに新たに追加されたPDFファイルを検索
         pdfs = self.search_drive_files(
             folder_id=self.google_drive_info["FOLDER_PDF"],
-            file_type="pdf",
+            file_type=".pdf",
             search_date=self.get_pastday(this_date=this_date, days=0),
         )
 
@@ -72,8 +98,8 @@ class MenuList:
                 gcs_destination_uri=f"gs://{self.bucket_name}/json/",
             )
 
-            # 文字情報のJSONファイルをメニュー表のCSVに変換しGoogle Driveに保存
-            self.convert_menu_csv()
+            # 文字情報のJSONファイルをメニュー表のスプレッドシートに変換しGoogle Driveに保存
+            self.convert_menu_spreadsheet()
 
     def copy_menu_from_drive_to_gcs(self, pdf_info: Dict[str, str]) -> None:
         """Google DriveからGCSにメニュー表(PDF)をコピー
@@ -106,7 +132,7 @@ class MenuList:
         # 検索条件
         condition_list = [
             f"('{folder_id}' in parents)",
-            f"(name contains '.{file_type}')",
+            f"(name contains '{file_type}')",
             f"(createdTime >= '{search_date}')",
         ]
         conditions = " and ".join(condition_list)
@@ -190,50 +216,141 @@ class MenuList:
         print("Waiting for the document detection to complete.")
         operation.result(timeout=420)
 
-    def convert_menu_csv(self) -> None:
-        """文字情報のJSONファイルからメニュー表のCSVファイルに変換しGoogle Driveに保存"""
+    def convert_menu_spreadsheet(self) -> None:
+        """文字情報のJSONファイルをメニュー表のスプレッドシートに変換しGoogle Driveに保存"""
         # 文字情報のJSONファイルからデータフレームを作成
         df_menu_info = self.convert_vision_response_to_dataframe()
 
         # １か月分のメニュー表の作成
         df_menu_for_month = self.make_menu_for_month(df_menu_info)
 
-        # メニュー表をGoogle Driveにアップロード
-        self.upload_menu_to_drive(
-            df=df_menu_for_month,
-            drive_csv_folder_id=self.google_drive_info["FOLDER_CSV"],
+        # メニューの更新・通知スケジュールの追加
+        df_date = (
+            df_menu_for_month.select(
+                date=pl.col("date")
+                .str.replace(r"\s.*", "")
+                .str.strptime(pl.Date, "%Y-%m-%d")
+            )
+            .unique()
+            .with_columns(weekday=pl.col("date").dt.weekday())
+            .with_columns(
+                is_holiday=pl.col("date").apply(lambda x: jpholiday.is_holiday(x))
+            )
+            .pipe(self.add_schedule, col_name="update_this_week", weekday=1)
+            .pipe(self.add_schedule, col_name="update_next_week", weekday=4)
+            .pipe(self.add_schedule, col_name="notice_check_lunch", weekday=4)
+            .pipe(self.add_schedule, col_name="report_next_week", weekday=4)
         )
 
-    def upload_menu_to_drive(self, df: pl.DataFrame, drive_csv_folder_id: str) -> None:
+        # １か月分のメニュー表に更新・通知スケジュールを追加
+        df_menu_for_month = df_menu_for_month.join(df_date, on="date")
+
+        # メニュー表をGoogle Driveにアップロード
+        self.create_menu_to_drive(
+            df=df_menu_for_month,
+            drive_folder_id=self.google_drive_info["FOLDER_EXCEL"],
+        )
+
+    def add_schedule(
+        self, df: pl.DataFrame, col_name: str, weekday: int
+    ) -> pl.DataFrame:
+        """メニューの更新・通知スケジュールの追加
+
+        Args:
+            df (pl.DataFrame): メニュー表
+            col_name (str): スケジュール名
+            weekday (int): 曜日(月曜日が1)
+
+        Returns:
+            pl.DataFrame: メニューの更新・通知スケジュール
+        """
+        df_date = (
+            df.with_columns(
+                pl.when(
+                    (pl.col("weekday") == weekday) & (pl.col("is_holiday") == False)
+                )
+                .then(True)
+                .otherwise(False)
+                .alias(col_name)
+            )
+            .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
+            .with_columns(count=pl.lit(0))
+        )
+
+        while weekday > 0:
+            df_date = (
+                df_date.with_columns(
+                    pl.when(
+                        (pl.col("weekday") == weekday)
+                        & (pl.col("is_holiday") == False)
+                        & (pl.col("count") == 0)
+                    )
+                    .then(True)
+                    .otherwise(pl.col(col_name))
+                    .alias(col_name)
+                )
+                .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
+                .select(pl.exclude("count"))
+            )
+
+            df_grouped = (
+                df_date.groupby("monday", maintain_order=True)
+                .agg(pl.col(col_name).sum())
+                .rename({col_name: "count"})
+            )
+
+            df_date = df_date.join(df_grouped, on="monday")
+
+            weekday -= 1
+
+        return df_date.select(pl.exclude("monday", "count"))
+
+    def create_menu_to_drive(self, df: pl.DataFrame, drive_folder_id: str) -> None:
         """メニュー表のデータフレームをGoogle Driveに保存
 
         Args:
             df (pl.DataFrame): メニュー表のデータフレーム
-            drive_csv_folder_id (str): Google DriveのフォルダーID
+            drive_folder_id (str): Google DriveのフォルダーID
         """
         # データフレームをCSVファイルに保存
+        file_name = self.create_menu_csv(df=df)
+
+        # スレッドシートをGoogle Driveにアップロード
+        self.create_spreadsheet(file_name=file_name, folder_id=drive_folder_id)
+
+        print(f"Upload {file_name} to Google Drive.")
+
+    def create_menu_csv(self, df: pl.DataFrame) -> str:
+        # メニューの通知・更新日を追加
+        df
+
+        # ファイル名の作成
         target_month = df["date"][0] + timedelta(weeks=1)
-        csv_file = f"{target_month.year}{target_month.month:02d}.csv"
+        file_name = f"{target_month.year}{target_month.month:02d}"
+        csv_file = f"{file_name}.csv"
+
+        # データフレームをCSVファイルに保存
         df.write_csv(file=f"./{csv_file}")
 
-        # CSVファイルをGoogle Driveにアップロード
-        self.upload_drive_csv(file_name=csv_file, folder_id=drive_csv_folder_id)
+        return file_name
 
-        print(f"Upload {csv_file} to Google Drive.")
-
-    def upload_drive_csv(self, file_name: str, folder_id: str) -> None:
-        """ローカルのCSVファイルをGoogle Driveにアップロード
+    def create_spreadsheet(self, file_name: str, folder_id: str) -> None:
+        """ローカルのCSVファイルをスプレッドシートに変換してGoogle Driveにアップロード
 
         Args:
             file_name (str): CSVのファイル名
-            parent_id (str): CSVファイルを保存するGoogle DriveのフォルダのID
+            parent_id (str): スプレッドシートを保存するGoogle DriveのフォルダのID
         """
-        file_metadata = {"name": file_name, "parents": [folder_id]}
+        file_metadata = {
+            "name": file_name,
+            "parents": [folder_id],
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+        }
         media = MediaFileUpload(
-            f"./{file_name}", mimetype="application/csv", resumable=True
+            f"./{file_name}.csv", mimetype="text/csv", resumable=True
         )
         request = self.service_drive.files().create(
-            body=file_metadata, media_body=media, supportsAllDrives=True
+            body=file_metadata, media_body=media, fields="id", supportsAllDrives=True
         )
 
         done = False
@@ -592,10 +709,13 @@ class MenuList:
             this_date (date): 当日の日付
         """
         # Google Driveに保存されているCSVファイルからメニュー表を読み込み
-        df_menu = self.get_menu_csv(this_date=this_date)
+        df_menu = self.read_menu_excel(this_date=this_date)
 
         # ユーザー情報の取得
-        df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
+        df_user = self.read_spreadsheet(
+            sheet_id=self.google_drive_info["SPREAD_SHEET"],
+            ranges="App: Logins!B1:B1000",
+        ).unique(subset="Email")
 
         # 翌週のメニュー表を作成
         df_menu_next_week = (
@@ -607,28 +727,33 @@ class MenuList:
             .with_columns(diff_days=(pl.col("monday") - this_date).dt.days())
             .filter(pl.col("diff_days") > 0)
             .filter(pl.col("diff_days") == pl.col("diff_days").min())
+            .filter(pl.col("is_holiday") == "FALSE")
             .select("date", "name", "price", "check", "Email")
         )
 
         # アプリの登録人数
-        menber_num = len(df_menu_next_week.unique(subset="Email"))
+        member_num = len(df_menu_next_week)
 
         # 翌週のメニュー表をスプレッドシートに上書き
         self.write_spreadsheet(
-            ranges=f"next_week!A1:E{menber_num*25+1}", df=df_menu_next_week
+            ranges=f"next_week!A1:E{member_num*25+1}", df=df_menu_next_week
         )
 
     def update_menu_this_week(self) -> None:
         """今週のメニューをアップデート"""
         # ユーザー情報の取得
-        df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
+        df_user = self.read_spreadsheet(
+            sheet_id=self.google_drive_info["SPREAD_SHEET"],
+            ranges="App: Logins!B1:B1000",
+        ).unique(subset="Email")
 
         # アプリの登録人数
-        menber_num = len(df_user.unique(subset="Email"))
+        member_num = len(df_user)
 
         # 翌週のメニューの取得
         df_menu_next_week = self.read_spreadsheet(
-            ranges=f"next_week!A1:E{menber_num*25+1}"
+            sheet_id=self.google_drive_info["SPREAD_SHEET"],
+            ranges=f"next_week!A1:E{member_num*25+1}",
         ).with_columns(
             date=pl.col("date")
             .str.replace(r"\s.*", "")
@@ -642,20 +767,24 @@ class MenuList:
 
         # 今週のメニューをスプレッドシートに上書き
         self.write_spreadsheet(
-            ranges=f"this_week!A1:D{menber_num*25+1}", df=df_menu_this_week
+            ranges=f"this_week!A1:D{member_num*25+1}", df=df_menu_this_week
         )
 
     def report_menu_next_week(self) -> None:
         """来週のメニューをslackにレポート"""
         # ユーザー情報の取得
-        df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
+        df_user = self.read_spreadsheet(
+            sheet_id=self.google_drive_info["SPREAD_SHEET"],
+            ranges="App: Logins!B1:B1000",
+        ).unique(subset="Email")
 
         # アプリの登録人数
-        menber_num = len(df_user.unique(subset="Email"))
+        member_num = len(df_user)
 
         # 翌週のメニューの取得
         df_menu_next_week = self.read_spreadsheet(
-            ranges=f"next_week!A1:E{menber_num*25+1}"
+            sheet_id=self.google_drive_info["SPREAD_SHEET"],
+            ranges=f"next_week!A1:E{member_num*25+1}",
         ).with_columns(
             date=pl.col("date")
             .str.replace(r"\s.*", "")
@@ -674,67 +803,12 @@ class MenuList:
         # 翌週のメニューをslackに送信
         self.message_to_slack(
             channel_name="sapporo_lunch",
-            header_text="来週のお弁当の一覧表です。",
+            header_text="来週のお弁当は下記の通りです:point_down:",
             df=df_menu_summary,
         )
 
-    def update_menu_spreadsheet(self, this_date: date) -> None:
-        """スプレッドシートのメニュー表を更新
-
-        Args:
-            this_date (date): 当日の日付
-        """
-        # 翌週と翌々週のメニュー表の作成
-        df_menu_next_two_weeks = self.get_menu_next_two_weeks(this_date)
-
-        df_menu_next_week = self.get_menu_next_week(this_date)
-
-        df_output = (
-            df_menu_next_two_weeks.join(
-                df_menu_next_week,
-                how="left",
-                on=["date", "name", "price", "Email"],
-            )
-            .fill_null("")
-            .select("date", "name", "price", "check", "Email")
-        )
-
-        # アプリの登録人数
-        menber_num = len(df_output.unique(subset="Email"))
-
-        # 翌週と翌々週のメニュー表をスプレッドシートに上書き
-        self.write_spreadsheet(ranges=f"menu!A1:E{menber_num*50+1}", df=df_output)
-
-    def get_menu_next_two_weeks(self, this_date: date) -> pl.DataFrame:
-        """Google Driveに保存されているCSVファイルから翌週と翌々週のメニューを取得
-
-        Args:
-            this_date (date): 当日の日付
-
-        Returns:
-            pl.DataFrame: 翌週と翌々週のメニュー
-        """
-        # Google Driveに保存されているCSVファイルからメニュー表を読み込み
-        df_menu = self.get_menu_csv(this_date=this_date)
-
-        # ユーザー情報の取得
-        df_user = self.read_spreadsheet(ranges="App: Logins!B1:B10")
-
-        # 翌週から翌々週までのメニュー表を抽出
-        df_menu_next_two_weeks = (
-            df_menu.with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
-            .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
-            .with_columns(diff_days=(pl.col("monday") - this_date).dt.days())
-            .with_columns(price="¥" + pl.col("price").cast(str))
-            .filter(pl.col("diff_days") > 0)
-            .pipe(self.filter_next_two_weeks)
-            .select(pl.exclude(["monday", "diff_days"]))
-        )
-
-        return df_menu_next_two_weeks.join(df_user, how="cross")
-
-    def get_menu_csv(self, this_date: date) -> pl.DataFrame:
-        """Google Driveに保存されているCSVファイルからメニュー表を読み込み
+    def read_menu_excel(self, this_date: date) -> pl.DataFrame:
+        """Google Driveに保存されているEXCELファイルからメニュー表を読み込み
 
         Args:
             this_date (date): 当日の日付
@@ -743,67 +817,28 @@ class MenuList:
             pl.DataFrame: メニュー表
         """
         # Google Driveに保存されているCSVファイルの検索
-        csvs = self.search_drive_files(
-            folder_id=self.google_drive_info["FOLDER_CSV"],
-            file_type="csv",
+        xlsxs = self.search_drive_files(
+            folder_id=self.google_drive_info["FOLDER_EXCEL"],
+            file_type="",
             search_date=self.get_pastday(this_date=this_date, days=31),
         )
 
         # Google DriveからCSVファイルをダウンロード
         df = pl.DataFrame()
         for i in range(2):
-            csv = csvs[i]
-            self.download_drive_file(file_id=csv["id"], filename=csv["name"])
-            df = pl.concat([df, pl.read_csv(csv["name"])])
+            xlsx = xlsxs[i]
+            df_menu = self.read_spreadsheet(
+                sheet_id=xlsx["id"], ranges=f"{xlsx['name']}!A1:I126"
+            )
+            df = pl.concat([df, df_menu])
 
-        return df.unique()
+        return df.sort(["date"]).unique()
 
-    def filter_next_two_weeks(self, df: pl.DataFrame) -> pl.DataFrame:
-        """翌週と翌々週のメニューを抽出
-
-        Args:
-            df (pl.DataFrame): メニュー表
-
-        Returns:
-            pl.DataFrame: 翌週と翌々週のメニュー
-        """
-        # 翌週のメニューを抽出
-        df_next = df.filter(pl.col("diff_days") == pl.col("diff_days").min())
-        # 翌々週のメニューを抽出
-        df_next2 = df.filter(pl.col("diff_days") > pl.col("diff_days").min()).filter(
-            pl.col("diff_days") == pl.col("diff_days").min()
-        )
-
-        return pl.concat([df_next, df_next2])
-
-    def get_menu_next_week(self, this_date: date) -> pl.DataFrame:
-        """Google Driveに保存されているスプレッドシートから翌週のメニュー表を取得
-
-        Args:
-            this_date (date): 当日の日付
-
-        Returns:
-            pl.DataFrame: 翌週のメニュー表
-        """
-        # Google Driveに保存されているスプレッドシートからメニュー表を読み込み
-        df_menu = self.read_spreadsheet(ranges="menu!A1:E301")
-
-        # 翌週のメニュー表を抽出
-        df_menu_next_week = (
-            df_menu.with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
-            .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
-            .with_columns(diff_days=(pl.col("monday") - this_date).dt.days())
-            .filter(pl.col("diff_days") > 0)
-            .filter(pl.col("diff_days") == pl.min("diff_days"))
-            .select(pl.exclude(["monday", "diff_days"]))
-        )
-
-        return df_menu_next_week
-
-    def read_spreadsheet(self, ranges: str) -> pl.DataFrame:
+    def read_spreadsheet(self, sheet_id: str, ranges: str) -> pl.DataFrame:
         """Google Driveに保存されているスプレッドシートからデータを読み込み
 
         Args:
+            sheet_id (str): スプレッドシートのID
             ranges (str): スプレッドシートのシート名:セル範囲
 
         Returns:
@@ -814,7 +849,7 @@ class MenuList:
             self.service_sheets.spreadsheets()
             .values()
             .batchGet(
-                spreadsheetId=self.google_drive_info["SPREAD_SHEET"],
+                spreadsheetId=sheet_id,
                 ranges=[ranges],
             )
             .execute()
@@ -833,7 +868,7 @@ class MenuList:
             df (pl.DataFrame): 書き込むデータ
         """
         # スプレッドシートのデータを削除
-        self.remove_spreadsheet(ranges, df)
+        self.remove_spreadsheet(ranges=ranges)
 
         # スプレッドシートに書き込むデータ
         data = [
@@ -860,29 +895,20 @@ class MenuList:
             .execute()
         )
 
-    def remove_spreadsheet(self, ranges: str, df: pl.DataFrame) -> None:
+    def remove_spreadsheet(self, ranges: str) -> None:
         """特定のセル範囲に書かれたスプレッドシートのデータを削除
 
         Args:
             ranges (str): スプレッドシートのシート名:セル範囲
-            df (pl.DataFrame): 書き込むデータ
         """
-        # スプレッドシートに書き込むデータ
-        data = [
-            {
-                "range": ranges,
-                "majorDimension": "COLUMNS",
-                "values": [[""] * int(ranges.split(":")[1][1:]) for col in df.columns],
-            }
-        ]
-
         # リクエスト
         (
             self.service_sheets.spreadsheets()
             .values()
-            .batchUpdate(
+            .clear(
                 spreadsheetId=self.google_drive_info["SPREAD_SHEET"],
-                body={"value_input_option": "USER_ENTERED", "data": data},
+                body={},
+                range=ranges,
             )
             .execute()
         )
@@ -909,17 +935,17 @@ class MenuList:
         try:
             response = client.chat_postMessage(
                 channel=self.slack_info["CHANNEL_ID"][channel_name],
-                blocks=self.make_slack_messages(
+                blocks=self.make_slack_blocks(
                     header_text=header_text, body_text=body_text, df=df
                 ),
             )
         except SlackApiError as e:
             assert e.response["error"]
 
-    def make_slack_messages(
+    def make_slack_blocks(
         self, header_text: str, body_text: str = None, df: pl.DataFrame = None
     ) -> List[Dict[str, Any]]:
-        """slackに送信するメッセージを作成
+        """slackに送信するメッセージブロックを作成
 
         Args:
             header_text (str): ヘッダー文
@@ -939,6 +965,7 @@ class MenuList:
                 self.make_slack_block(type="section", sub_type="mrkdwn", text=body_text)
             )
         if df is not None:
+            df = df.with_columns(date=pl.col("date").dt.strftime("%Y年%m月%d日 (%a)"))
             for menu in df.iter_rows(named=True):
                 messages.append(
                     self.make_slack_block(
