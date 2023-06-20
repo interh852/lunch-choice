@@ -713,8 +713,9 @@ class MenuList:
 
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(
-            sheet_id=self.google_drive_info["SPREAD_SHEET"], ranges="App: Logins!B1:B10"
-        ).unique(subset=["Email"])
+            sheet_id=self.google_drive_info["SPREAD_SHEET"],
+            ranges="App: Logins!B1:B1000",
+        ).unique(subset="Email")
 
         # 翌週のメニュー表を作成
         df_menu_next_week = (
@@ -742,11 +743,12 @@ class MenuList:
         """今週のメニューをアップデート"""
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(
-            sheet_id=self.google_drive_info["SPREAD_SHEET"], ranges="App: Logins!B1:B10"
-        )
+            sheet_id=self.google_drive_info["SPREAD_SHEET"],
+            ranges="App: Logins!B1:B1000",
+        ).unique(subset="Email")
 
         # アプリの登録人数
-        member_num = len(df_user.unique(subset="Email"))
+        member_num = len(df_user)
 
         # 翌週のメニューの取得
         df_menu_next_week = self.read_spreadsheet(
@@ -772,8 +774,9 @@ class MenuList:
         """来週のメニューをslackにレポート"""
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(
-            sheet_id=self.google_drive_info["SPREAD_SHEET"], ranges="App: Logins!B1:B10"
-        ).unique(subset=["Email"])
+            sheet_id=self.google_drive_info["SPREAD_SHEET"],
+            ranges="App: Logins!B1:B1000",
+        ).unique(subset="Email")
 
         # アプリの登録人数
         member_num = len(df_user)
