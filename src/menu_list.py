@@ -729,6 +729,7 @@ class MenuList:
             .filter(pl.col("diff_days") == pl.col("diff_days").min())
             .filter(pl.col("is_holiday") == "FALSE")
             .select("date", "name", "price", "check", "Email")
+            .sort(["Email", "date"])
         )
 
         # アプリの登録人数
