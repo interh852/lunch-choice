@@ -82,7 +82,7 @@ class MenuList:
         pdfs = self.search_drive_files(
             folder_id=self.google_drive_info["FOLDER_PDF"],
             file_type=".pdf",
-            search_date=self.get_pastday(this_date=this_date, days=0),
+            search_date=self.get_pastday(this_date=this_date, days=7),
         )
 
         if pdfs:
@@ -236,6 +236,7 @@ class MenuList:
             .with_columns(
                 is_holiday=pl.col("date").apply(lambda x: jpholiday.is_holiday(x))
             )
+            .pipe(self.add_schedule_monthly, col_name="create", weekday=3)
             .pipe(self.add_schedule, col_name="update_this_week", weekday=1)
             .pipe(self.add_schedule, col_name="update_next_week", weekday=4)
             .pipe(self.add_schedule, col_name="notice_check_lunch", weekday=4)
@@ -250,6 +251,24 @@ class MenuList:
             df=df_menu_for_month,
             drive_folder_id=self.google_drive_info["FOLDER_EXCEL"],
         )
+
+    def add_schedule_monthly(
+        self, df: pl.DataFrame, col_name: str, weekday: str
+    ) -> pl.DataFrame:
+        df_last_monday = (
+            df.with_columns(monday=pl.col("date").dt.truncate(every="1w"))
+            .filter(pl.col("monday") == pl.col("monday").max())
+            .filter(pl.col("weekday") == weekday)
+        )
+
+        output_df = df.with_columns(
+            pl.when(pl.col("date") == df_last_monday["date"])
+            .then(True)
+            .otherwise(False)
+            .alias(col_name)
+        )
+
+        return output_df
 
     def add_schedule(
         self, df: pl.DataFrame, col_name: str, weekday: int
@@ -714,7 +733,7 @@ class MenuList:
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(
             sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges="App: Logins!B1:B1000",
+            ranges="users!B1:B50",
         ).unique(subset="Email")
 
         # 翌週のメニュー表を作成
@@ -745,7 +764,7 @@ class MenuList:
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(
             sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges="App: Logins!B1:B1000",
+            ranges="users!B1:B50",
         ).unique(subset="Email")
 
         # アプリの登録人数
@@ -776,7 +795,7 @@ class MenuList:
         # ユーザー情報の取得
         df_user = self.read_spreadsheet(
             sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges="App: Logins!B1:B1000",
+            ranges="users!B1:B50",
         ).unique(subset="Email")
 
         # アプリの登録人数
@@ -829,7 +848,7 @@ class MenuList:
         for i in range(2):
             xlsx = xlsxs[i]
             df_menu = self.read_spreadsheet(
-                sheet_id=xlsx["id"], ranges=f"{xlsx['name']}!A1:I126"
+                sheet_id=xlsx["id"], ranges=f"{xlsx['name']}!A1:J126"
             )
             df = pl.concat([df, df_menu])
 
