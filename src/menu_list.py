@@ -861,8 +861,9 @@ class MenuList:
         xlsxs = self.search_drive_files(
             folder_id=self.google_drive_info["FOLDER_EXCEL"],
             file_type="",
-            search_date=self.get_pastday(this_date=this_date, days=31),
+            search_date=self.get_pastday(this_date=this_date, days=45),
         )
+        print(xlsxs)
 
         # Google DriveからEXCELファイルをダウンロード
         df = pl.DataFrame()
