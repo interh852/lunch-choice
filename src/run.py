@@ -37,9 +37,6 @@ def main():
         if args.operation == "create":
             # PDFのメニュー表からスプレッドシートのメニュー表の作成
             ml.create_menu_spreadsheet(this_date)
-        elif args.operation == "update_this_week":
-            # Google sheetの今週のメニュー表を更新
-            ml.update_menu_this_week()
         elif args.operation == "update_next_week":
             # Google sheetの来週のメニュー表を更新
             ml.update_menu_next_week(this_date)
@@ -50,6 +47,9 @@ def main():
                 header_text="来週のお弁当のチェックをお願いします:white_check_mark:",
                 body_text=f":iphone: {ml.google_drive_info['GLIDE_URL']}",
             )
+        elif args.operation == "update_this_week":
+            # Google sheetの今週のメニュー表を更新
+            ml.update_menu_this_week()
         elif args.operation == "report_next_week":
             # 来週のお弁当の注文リストを集計してレポート
             ml.report_menu_next_week()
