@@ -727,98 +727,119 @@ class MenuList:
         Args:
             this_date (date): 当日の日付
         """
-        # Google Driveに保存されているCSVファイルからメニュー表を読み込み
+        # Google Driveに保存されているEXECELファイルからメニュー表を読み込み
         df_menu = self.read_menu_excel(this_date=this_date)
 
-        # ユーザー情報の取得
-        df_user = self.read_spreadsheet(
-            sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges="users!B1:B50",
-        ).unique(subset="Email")
-
         # 翌週のメニュー表を作成
+        df_menu_next_week = self.make_days_for_next_week(
+            df_menu=df_menu, this_date=this_date
+        )
+
+        # 翌週のメニュー表をスプレッドシートに上書き
+        for i in range(5):
+            self.write_spreadsheet(
+                ranges=f"menu_day{i + 1}!A1:C6",
+                df=df_menu_next_week.filter(pl.col("weekday") == (i + 1)).select(
+                    "date", "name", "price"
+                ),
+            )
+
+        self.write_spreadsheet(
+            ranges=f"next_week!C1:G10",
+            df=pl.DataFrame(
+                data=[[""], [""], [""], [""], [""]],
+                schema=[
+                    "menu_day1",
+                    "menu_day2",
+                    "menu_day3",
+                    "menu_day4",
+                    "menu_day5",
+                ],
+            ),
+        )
+
+    def make_days_for_next_week(
+        self, df_menu: pl.DataFrame, this_date: date
+    ) -> pl.DataFrame:
         df_menu_next_week = (
-            df_menu.join(df_user, how="cross")
-            .with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
-            .with_columns(price="¥" + pl.col("price").cast(str))
-            .with_columns(check=pl.lit(""))
+            df_menu.with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
             .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
+            .with_columns(pl.col("weekday").cast(pl.Int16))
             .with_columns(diff_days=(pl.col("monday") - this_date).dt.days())
             .filter(pl.col("diff_days") > 0)
             .filter(pl.col("diff_days") == pl.col("diff_days").min())
             .filter(pl.col("is_holiday") == "FALSE")
-            .select("date", "name", "price", "check", "Email")
-            .sort(["Email", "date"])
+            .sort(["date"])
         )
 
-        # アプリの登録人数
-        member_num = len(df_menu_next_week)
-
-        # 翌週のメニュー表をスプレッドシートに上書き
-        self.write_spreadsheet(
-            ranges=f"next_week!A1:E{member_num*25+1}", df=df_menu_next_week
-        )
+        return df_menu_next_week
 
     def update_menu_this_week(self) -> None:
         """今週のメニューをアップデート"""
-        # ユーザー情報の取得
-        df_user = self.read_spreadsheet(
-            sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges="users!B1:B50",
-        ).unique(subset="Email")
+        # 翌週の日付を取得
+        df_next_week = pl.DataFrame()
+        for i in range(5):
+            df_days = (
+                self.read_spreadsheet(
+                    sheet_id=self.google_drive_info["SPREAD_SHEET"],
+                    ranges=f"menu_day{i+1}!A1:A2",
+                )
+                .with_columns(days=pl.lit(f"menu_day{i+1}"))
+                .with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+            )
+            df_next_week = pl.concat([df_next_week, df_days])
 
-        # アプリの登録人数
-        member_num = len(df_user)
-
-        # 翌週のメニューの取得
-        df_menu_next_week = self.read_spreadsheet(
-            sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges=f"next_week!A1:E{member_num*25+1}",
-        ).with_columns(
-            date=pl.col("date")
-            .str.replace(r"\s.*", "")
-            .str.strptime(pl.Date, "%Y-%m-%d")
-        )
-
-        # 注文されたメニューを抽出
-        df_menu_this_week = df_menu_next_week.filter(pl.col("check") == "TRUE").select(
-            pl.exclude("check")
+        # チェックした翌週のメニューを取得
+        df_menu_this_week = (
+            self.read_spreadsheet(
+                sheet_id=self.google_drive_info["SPREAD_SHEET"],
+                ranges=f"next_week!A1:G10",
+            )
+            .filter(pl.col("order") == "あり")
+            .melt(id_vars=["user", "order"], variable_name="days", value_name="menu")
+            .join(df_next_week, on="days", how="left")
+            .select(["date", "user", "menu"])
         )
 
         # 今週のメニューをスプレッドシートに上書き
-        self.write_spreadsheet(
-            ranges=f"this_week!A1:D{member_num*25+1}", df=df_menu_this_week
-        )
+        self.write_spreadsheet(ranges=f"this_week!A1:C100", df=df_menu_this_week)
 
     def report_menu_next_week(self) -> None:
         """来週のメニューをslackにレポート"""
-        # ユーザー情報の取得
-        df_user = self.read_spreadsheet(
-            sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges="users!B1:B50",
-        ).unique(subset="Email")
+        # 翌週の日付を取得
+        df_next_week = pl.DataFrame()
+        for i in range(5):
+            df_days = (
+                self.read_spreadsheet(
+                    sheet_id=self.google_drive_info["SPREAD_SHEET"],
+                    ranges=f"menu_day{i+1}!A1:A2",
+                )
+                .with_columns(days=pl.lit(f"menu_day{i+1}"))
+                .with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
+            )
+            df_next_week = pl.concat([df_next_week, df_days])
 
-        # アプリの登録人数
-        member_num = len(df_user)
-
-        # 翌週のメニューの取得
-        df_menu_next_week = self.read_spreadsheet(
-            sheet_id=self.google_drive_info["SPREAD_SHEET"],
-            ranges=f"next_week!A1:E{member_num*25+1}",
-        ).with_columns(
-            date=pl.col("date")
-            .str.replace(r"\s.*", "")
-            .str.strptime(pl.Date, "%Y-%m-%d")
+        # チェックした翌週のメニューを取得
+        df_menu_next_week = (
+            self.read_spreadsheet(
+                sheet_id=self.google_drive_info["SPREAD_SHEET"],
+                ranges=f"next_week!A1:G10",
+            )
+            .filter(pl.col("order") == "あり")
+            .melt(id_vars=["user", "order"], variable_name="days", value_name="menu")
+            .join(df_next_week, on="days", how="left")
+            .select(["date", "user", "menu"])
         )
 
         # 翌週のメニューの集計
         df_menu_summary = (
-            df_menu_next_week.filter(pl.col("check") == "TRUE")
-            .select("date", "name", "price", "check")
-            .groupby(["date", "name", "price"])
+            df_menu_next_week.select("date", "menu")
+            .groupby(["date", "menu"])
             .count()
             .sort(["date"])
         )
+
+        print(df_menu_summary)
 
         # 翌週のメニューをslackに送信
         self.message_to_slack(
@@ -836,14 +857,15 @@ class MenuList:
         Returns:
             pl.DataFrame: メニュー表
         """
-        # Google Driveに保存されているCSVファイルの検索
+        # Google Driveに保存されているEXCELファイルの検索
         xlsxs = self.search_drive_files(
             folder_id=self.google_drive_info["FOLDER_EXCEL"],
             file_type="",
-            search_date=self.get_pastday(this_date=this_date, days=31),
+            search_date=self.get_pastday(this_date=this_date, days=45),
         )
+        print(xlsxs)
 
-        # Google DriveからCSVファイルをダウンロード
+        # Google DriveからEXCELファイルをダウンロード
         df = pl.DataFrame()
         for i in range(2):
             xlsx = xlsxs[i]
@@ -875,10 +897,19 @@ class MenuList:
             .execute()
         )
 
-        # レスポンスからデータ部分の抽出
         ranges = response.get("valueRanges", [])
 
-        return pl.DataFrame(ranges[0]["values"][1:], schema=ranges[0]["values"][0])
+        # レスポンスから列名とデータ部分の抽出
+        lst = ranges[0]["values"][1:]
+        cols = ranges[0]["values"][0]
+
+        # リストの最大の長さに揃える
+        max_len = max(len(sublist) for sublist in lst)
+        for sublist in lst:
+            while len(sublist) < max_len:
+                sublist.append(None)
+
+        return pl.DataFrame(data=lst, schema=cols)
 
     def write_spreadsheet(self, ranges: str, df: pl.DataFrame) -> None:
         """データフレームをスプレッドシートに書き込み
@@ -955,14 +986,14 @@ class MenuList:
         try:
             response = client.chat_postMessage(
                 channel=self.slack_info["CHANNEL_ID"][channel_name],
-                blocks=self.make_slack_blocks(
+                blocks=self.make_report_blocks(
                     header_text=header_text, body_text=body_text, df=df
                 ),
             )
         except SlackApiError as e:
             assert e.response["error"]
 
-    def make_slack_blocks(
+    def make_report_blocks(
         self, header_text: str, body_text: str = None, df: pl.DataFrame = None
     ) -> List[Dict[str, Any]]:
         """slackに送信するメッセージブロックを作成
