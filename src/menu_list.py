@@ -812,6 +812,7 @@ class MenuList:
             .filter(pl.col("order") == "あり")
             .melt(id_vars=["user", "order"], variable_name="days", value_name="menu")
             .join(df_next_week, on="days", how="left")
+            .filter(pl.col("menu") != "")
             .select(["date", "user", "menu"])
         )
 
