@@ -13,6 +13,9 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+pl.Config.set_tbl_cols(-1)
+pl.Config.set_tbl_rows(-1)
+
 
 class MenuList:
     def __init__(self):
@@ -719,7 +722,7 @@ class MenuList:
 
         return "".join(output_df["text"].to_list())
 
-    # ----------------------------- Glideのメニュー表の操作 ----------------------------- #
+    # ----------------------------- AppSheet用スプレッドシートのメニュー表の操作 ----------------------------- #
 
     def update_menu_next_week(self, this_date: date) -> None:
         """来週のメニューをアップデート
@@ -745,10 +748,12 @@ class MenuList:
             )
 
         self.write_spreadsheet(
-            ranges=f"next_week!C1:G10",
+            ranges=f"next_week!A1:G10",
             df=pl.DataFrame(
-                data=[[""], [""], [""], [""], [""]],
+                data=[[""], [""], [""], [""], [""], [""], [""]],
                 schema=[
+                    "user",
+                    "order",
                     "menu_day1",
                     "menu_day2",
                     "menu_day3",
@@ -761,6 +766,15 @@ class MenuList:
     def make_days_for_next_week(
         self, df_menu: pl.DataFrame, this_date: date
     ) -> pl.DataFrame:
+        """来週の日付データ
+
+        Args:
+            df_menu (pl.DataFrame): メニュー
+            this_date (date): 当日の日付
+
+        Returns:
+            pl.DataFrame: 来週の日付データ
+        """
         df_menu_next_week = (
             df_menu.with_columns(date=pl.col("date").str.strptime(pl.Date, "%Y-%m-%d"))
             .with_columns(monday=pl.col("date").dt.truncate(every="1w"))
@@ -798,6 +812,7 @@ class MenuList:
             .filter(pl.col("order") == "あり")
             .melt(id_vars=["user", "order"], variable_name="days", value_name="menu")
             .join(df_next_week, on="days", how="left")
+            .filter(pl.col("menu") != "")
             .select(["date", "user", "menu"])
         )
 
@@ -839,8 +854,6 @@ class MenuList:
             .sort(["date"])
         )
 
-        print(df_menu_summary)
-
         # 翌週のメニューをslackに送信
         self.message_to_slack(
             channel_name="sapporo_lunch",
@@ -863,7 +876,6 @@ class MenuList:
             file_type="",
             search_date=self.get_pastday(this_date=this_date, days=45),
         )
-        print(xlsxs)
 
         # Google DriveからEXCELファイルをダウンロード
         df = pl.DataFrame()
@@ -874,7 +886,7 @@ class MenuList:
             )
             df = pl.concat([df, df_menu])
 
-        return df.sort(["date"]).unique()
+        return df.sort(["date"]).unique(subset=["date", "name"], keep="last")
 
     def read_spreadsheet(self, sheet_id: str, ranges: str) -> pl.DataFrame:
         """Google Driveに保存されているスプレッドシートからデータを読み込み

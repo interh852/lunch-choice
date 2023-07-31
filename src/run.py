@@ -45,7 +45,7 @@ def main():
             ml.message_to_slack(
                 channel_name="sapporo_lunch",
                 header_text="来週のお弁当のチェックをお願いします:white_check_mark:",
-                body_text=f":iphone: {ml.google_drive_info['GLIDE_URL']}",
+                body_text=f":iphone: {ml.google_drive_info['APP_URL']}",
             )
         elif args.operation == "update_this_week":
             # Google sheetの今週のメニュー表を更新
