@@ -1,6 +1,6 @@
 # lunch-choice
 社内のお弁当の選択・集計するアプリ
-<img src="figures/お弁当アプリ.png" width="100%" />
+<img src="figures/お弁当アプリ.svg" width="100%" />
 
 # Development
 
